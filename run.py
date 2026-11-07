@@ -217,7 +217,7 @@ def main():
     # mock was asked for. A silent fall-back to mock is the worst failure this
     # tool could have: it produces a complete, plausible set of outputs that
     # are entirely synthetic.
-    from pf.llm import detect_provider, ENV_KEYS
+    from pf.llm import detect_provider, ENV_KEYS, LLMError
     provider = cfg["llm"].get("provider") or detect_provider()
     if provider == "mock" and (args.provider or "").lower() != "mock":
         keys = ", ".join(v for v in ENV_KEYS.values() if v)
@@ -266,14 +266,52 @@ def main():
           f"{len(merges)} speaker aliases merged")
     P.write_beats(beats, os.path.join(outdir, "beats.jsonl"))
 
+    # One episode's model call failing used to abort the whole run, losing
+    # every episode already done. Both observed failures were real: an
+    # oversized judge prompt (HTTP 413) and the daily token ceiling (HTTP 429
+    # after the retry). LLMError is caught rather than only LLMClientError,
+    # because the 413 raises the latter but the exhausted-budget 429 raises
+    # the former, and catching only one would leave the other aborting.
     log, tag_stats, all_cands = [], [], []
+    failed_eps = {}
+
+    def note_failure(stage, episode, exc):
+        failed_eps[episode] = f"{stage}: {type(exc).__name__}"
+        log.append({"stage": stage, "episode": episode, "beat_range": "",
+                    "gate_fired": "episode_failed",
+                    "measured_value": " ".join(str(exc).split())[:300],
+                    "limit": "the model call must succeed",
+                    "action": "reject", "repair_attempts": 0})
+        print(f"      WARNING: episode {episode} failed at {stage} "
+              f"({type(exc).__name__}); continuing")
+
+    def too_many_failed():
+        """More than a third of episodes failing is not a bad episode, it is
+        a broken run. Say so loudly and stop rather than publish a shortlist
+        drawn from whatever happened to get through."""
+        if len(failed_eps) * 3 > len(episodes):
+            sys.exit(
+                f"\n*** {len(failed_eps)} of {len(episodes)} EPISODES FAILED "
+                f"their model call. That is more than a third, so this run is\n"
+                f"    not trustworthy and has been stopped.\n\n"
+                f"    Failed: {sorted(failed_eps)}\n"
+                f"    Last reason: {list(failed_eps.values())[-1]}\n\n"
+                f"    Completed calls are cached, so fixing the cause and "
+                f"re-running resumes rather than restarts.\n")
+
     print(f"[2/7] tagging ({len(episodes)} calls, "
           f"provider={llm_for('tag').get('provider') or provider})")
     tagged_all = {}
     for m in episodes:
-        tg, st = T.tag_episode(m, beats_by_ep[m["episode"]], llm_for("tag"), log)
+        try:
+            tg, st = T.tag_episode(m, beats_by_ep[m["episode"]],
+                                   llm_for("tag"), log)
+        except LLMError as exc:
+            note_failure("tag", m["episode"], exc)
+            continue
         tagged_all[m["episode"]] = tg
         tag_stats.append(st)
+    too_many_failed()
 
     # Write THIS run's tag output. The report samples the hooks that were
     # tagged, and it must read them from here. Recovering them from the
@@ -287,7 +325,9 @@ def main():
 
     print("[3/7] assembling and gating")
     per_ep_generated = {}
-    for m in episodes:
+    # Only episodes that actually got tagged. An episode whose tag call failed
+    # has no beat ids to assemble from, and is already counted as failed.
+    for m in [e for e in episodes if e["episode"] in tagged_all]:
         cands = A.build_candidates(m, beats_by_ep[m["episode"]],
                                    tagged_all[m["episode"]], cfg, log)
         per_ep_generated[m["episode"]] = len(cands)
@@ -315,9 +355,14 @@ def main():
     print(f"[4/7] judging ({len(all_cands)} batched calls)")
     scored = []
     for m, cands in all_cands:
-        s, _ = J.judge_episode(m, beats_by_ep[m["episode"]], cands,
-                               llm_for("judge"), log)
+        try:
+            s, _ = J.judge_episode(m, beats_by_ep[m["episode"]], cands,
+                                   llm_for("judge"), log)
+        except LLMError as exc:
+            note_failure("judge", m["episode"], exc)
+            continue
         scored.extend(s)
+    too_many_failed()
     print(f"      {len(scored)} candidates scored")
 
     print("[5/7] clustering")
@@ -339,6 +384,7 @@ def main():
                        if r.get("gate_fired") == "judge_dimension_missing")
     funnel = {
         "episodes": len(episodes),
+        "episodes_failed": len(failed_eps),
         "episodes_with_no_candidates": len(empty_eps),
         "beats": len(beats),
         "hooks_tagged": sum(s["hooks"] for s in tag_stats),
