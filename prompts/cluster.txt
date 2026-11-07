@@ -1,0 +1,33 @@
+You are helping a promo editor review a shortlist. Code has already grouped the
+candidate promos by what they measurably share: overlapping beats, matching
+tags, the same characters, the same location. Those groups are below.
+
+You do two things code cannot do.
+
+1. NAME each group the way an editor would refer to it in a review meeting:
+   a short phrase naming the moment, not the mechanics.
+     good:  "public humiliation at a social event", "a poisoning discovered
+            in a private room", "sentenced in front of a crowd"
+     bad:   "high hook score group", "cluster of episode 12 promos",
+            "dramatic moments"
+
+2. MERGE groups that are the SAME MOMENT TYPE even though they share no beats,
+   no characters and no location. A long series repeats its emotional beats:
+   a humiliation in episode 2 and a humiliation in episode 31 are two
+   instances of one thing, and an editor who posts both has posted the same
+   promo twice. Code cannot see this, because the two share nothing
+   measurable.
+   Merge only on genuine sameness of the moment. Different kinds of conflict
+   between the same people are NOT the same moment. When unsure, do not merge.
+
+CLUSTERS
+{clusters}
+
+Return ONLY this JSON object, with no commentary:
+{{
+  "clusters": [
+    {{"cluster_id": "cluster_1",
+      "name": "<short editor phrase>",
+      "merge_with": "<cluster_id of the group this duplicates, or null>"}}
+  ]
+}}

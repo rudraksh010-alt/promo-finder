@@ -1,0 +1,4 @@
+# No third-party packages are required: run.py falls back to a built-in
+# config parser and uses only the standard library for HTTP and JSON.
+# pyyaml is optional and used for config.yaml if it happens to be installed.
+pyyaml>=6.0

@@ -1,0 +1,157 @@
+# Promo finder configuration.
+# Everything tunable lives here. Swapping model or provider is a config change,
+# never a code change.
+
+llm:
+  # provider: gemini | groq | openrouter | openai | anthropic | mock
+  # Leave blank to auto-detect from whichever API key is in the environment;
+  # falls back to "mock", which runs the whole pipeline with no key at all.
+  provider: groq
+  # Each model has its OWN 8,000 tokens/minute bucket on the free tier, so
+  # using three different models is also what keeps the run from stalling.
+  # Groq meters tokens per DAY per model (200,000), not just per minute, and
+  # that limit appears in NO response header - only in the 429 when you hit
+  # it. Tagging 50 episodes costs ~176,000 tokens, so the tagger needs a
+  # model whose daily budget is intact. qwen reached 197,702/200,000 on the
+  # first full run and is spent for the day.
+  tag_model: openai/gpt-oss-20b
+  # A DIFFERENT model judges than the one that picked, so the judge cannot
+  # prefer its own work. Point this at a stronger model when you have one.
+  judge_model: openai/gpt-oss-120b
+  # Cluster naming is one small call and is not bound by the tag/judge split.
+  cluster_model: openai/gpt-oss-20b
+  temperature: 0.0
+  camera_words: 14          # trim camera prose in the tag prompt
+
+  # Reasoning models think in output tokens before they answer. With no cap
+  # they can spend the whole budget reasoning and return an EMPTY completion.
+  # Measured need with "low" reasoning is 581-606 output tokens, so this is
+  # ~3x headroom. Keeping it low also matters because Groq pre-checks the
+  # request's EXPECTED output against the per-minute ceilings and refuses the
+  # call outright if max_tokens is set optimistically high.
+  max_tokens: 1024
+  # Measured on this pack, per model, because they differ by ~8x:
+  #   qwen3.8-27b    606 output tokens, but a hard 1,000 output-per-minute
+  #                  ceiling, so max_tokens must stay under it
+  #   gpt-oss-120b   581 output tokens, no such ceiling
+  #   gpt-oss-20b    4,561 output tokens: it reasons verbosely, so it only
+  #                  fits where the INPUT is small (the one cluster call)
+  # Measured on this pack's episode-1 tag prompt (3,469 input tokens) at
+  # "low" reasoning effort: gpt-oss-20b emits 810 output tokens and
+  # gpt-oss-120b 861, both valid JSON with 0 invalid beat ids. 2048 gives
+  # ~2.5x headroom while keeping the per-request pre-check (input +
+  # max_tokens = 5,517) under the 8,000 tokens-per-minute ceiling.
+  max_tokens_by_model:
+    qwen/qwen3.8-27b: 960
+    openai/gpt-oss-120b: 2048
+    openai/gpt-oss-20b: 2048
+
+  # Seconds between real model calls. Groq's free tier meters 8,000 tokens
+  # per minute per model over a rolling window and pre-checks each request as
+  # input + max_tokens, so a ~4,000-token tag prompt cannot be sent twice in
+  # a minute. Cache hits never wait. Set to 0 on a paid tier.
+  # 40s, not 35s, because the tag model's binding limit is its 1,000
+  # output-tokens-per-minute ceiling and each tag call emits ~606 of them:
+  # two calls inside one minute would exceed it.
+  min_call_interval_seconds: 40
+
+  # PREPARED, INACTIVE. Uncomment to move one role to another provider when a
+  # daily token budget stalls the run: free tiers meter tokens per DAY per
+  # model (Groq: 200,000), and tagging 50 episodes needs most of one model's
+  # day. Each provider named here needs its own key in the environment; the
+  # run exits at startup if one is missing. While this stays commented out,
+  # every role uses `provider` above and behaviour is unchanged.
+  # provider_by_role:
+  #   tag: groq
+  #   judge: openrouter
+  #   cluster: groq
+  # "low" cut output ~8x at equal quality on this pack (4,561 -> 581 tokens),
+  # which matters because the free tier allows 8,000 tokens per minute per
+  # model. Set blank to omit the parameter for providers that reject it.
+  reasoning_effort: low
+  # Measured: qwen3.8-27b returns an EMPTY completion whenever this parameter
+  # is present, but produces valid JSON in 606 tokens without it. Blank omits
+  # the parameter for that model.
+  reasoning_effort_by_model:
+    qwen/qwen3.8-27b: ""
+
+# Hard gates. These come from the brief and are enforced by arithmetic,
+# never by asking the model nicely.
+gates:
+  min_duration: 20.0        # brief: "a 20 to 60-second clip"
+  max_duration: 60.0
+  hook_within: 3.0          # brief: "something in the first 3 seconds"
+  cliffhanger_tail_pad: 2.0 # seconds allowed after the cliffhanger beat ends
+  max_lead_in_beats: 2      # wordless beats allowed before the hook lands
+  max_repair_attempts: 2
+
+# mode B (multi-segment) - NOT IMPLEMENTED.
+# These three have NO references anywhere in pf/ and enforce nothing. They
+# are unreachable while every candidate is a single continuous segment, which
+# is the only mode built (DESIGN_LADDER R5: mode A is the default, B is a
+# contingency). They are kept here as the spec for mode B, not presented as
+# gates, because an advertised gate that does nothing is worse than no gate.
+mode_b_not_implemented:
+  max_segments: 6
+  min_visual_segment: 1.0
+  min_mean_segment: 3.0
+
+# Gradient preferences. A 44s promo is not a 20s promo; a hook at 0.2s beats
+# one at 2.9s even though both pass the gate.
+preferences:
+  ideal_duration: [45.0, 60.0]   # top of the brief's band: DramaBox's US top 10
+                                 # had seven entries at 46-64s (test-cut band)
+  duration_fit_floor: 0.3
+  repair_penalty: 0.15           # a repaired candidate can never outrank a
+                                 # candidate that was correct first time
+  # IoU above which two candidates are the same promo. 0.6 was far too
+  # aggressive for this input shape: episodes average ~123s and promos are
+  # 20-60s, so any two windows in one episode overlap heavily by
+  # construction. Two 40s windows starting 10s apart score IoU 0.60 and were
+  # being merged, though a 10s shift means a completely different opening
+  # beat. Measured cost at 0.6: 295 candidates passing gates collapsed to 66.
+  # At 0.85 two 40s windows must start within ~3s to count as duplicates.
+  # The evaluation match rule already encodes this lesson (IoU >= 0.5 AND
+  # starts within 2s); it had not been carried across to the dedupe.
+  dedupe_overlap: 0.85
+
+# Set from the observed numbers, as R4 said to: the cap has never bound in
+# any run (~4 gate-passers and <=3 distinct windows per episode), so 20 was
+# describing a pool that does not exist. Changes no output.
+shortlist_per_episode: 8
+
+# Ranking. List A answers "which would you post first".
+ranking:
+  standalone_gate: 4             # relaxed stepwise 4 -> 3, and no further
+  # Floor for the relaxation ladder. Overrides R6's explicit 4->3->2->1:
+  # relaxing to 1 disables the gate entirely and admits standalone=1 promos
+  # into a list whose whole purpose is cold-viewer comprehensibility. It
+  # preferred ten incomprehensible promos to four good ones. Below this
+  # floor the run reports "List A holds N at gate 3" instead of relaxing.
+  standalone_gate_floor: 3
+  min_list_a: 10                 # until List A holds at least this many
+  list_b_top_fraction: 0.2       # top 20% by hook among clarity-gate failures
+  list_b_max: 5
+  top_hook_override: true        # the single best hook takes #1 regardless of cluster
+
+clustering:
+  beat_overlap_weight: 0.5
+  tag_overlap_weight: 0.2
+  speaker_overlap_weight: 0.2
+  location_weight: 0.1
+  merge_threshold: 0.45
+  llm_naming: true               # one small call: name groups, merge semantic dupes
+
+evaluation:
+  match_iou: 0.5
+  match_start_within: 2.0        # IoU alone is matched by a random window 28%
+                                 # of the time on ~123s episodes; with this, 5.1%
+  random_baseline: 0.051
+  # Baseline for the start-only rule (evaluation tier 3: hook points, a start
+  # with no end). That rule drops IoU and tests only "same episode, start
+  # within match_start_within", which is looser than the span match, so it
+  # needs its own baseline or the lift number is meaningless.
+  match_start_only_baseline: 0.053
+  blind_ab_pairs: 20
+
+output_dir: outputs

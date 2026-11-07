@@ -1,0 +1,18 @@
+# The input pack is confidential and must never be committed.
+data/
+*.txt
+!prompts/*.txt
+!requirements.txt
+
+# Run artifacts
+outputs/
+.cache/
+*.jsonl
+gold_test.csv
+__pycache__/
+*.pyc
+.env
+
+# Private working notes. The design ladder is a personal strategy document,
+# not part of the published code. It stays on disk, out of the repo.
+DESIGN_LADDER.md
