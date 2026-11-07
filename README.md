@@ -57,7 +57,7 @@ and a built-in fallback parses the config otherwise.
 | 1 | Parse | code | hard assertions, fails loudly on an unexpected format |
 | 2 | Tag | LLM | one call per episode, beats shown **without** times |
 | 3 | Assemble, gate, repair | code | enumerate windows, enforce the brief's constraints |
-| 4 | Judge | LLM | one **batched** call per episode, candidates as id ranges |
+| 4 | Judge | LLM | one call per episode, scoring all of its candidates together |
 | 5 | Cluster | code | beat / tag / speaker / location overlap |
 | 6 | Name clusters | LLM | one call: name groups, merge semantic duplicates |
 | 7 | Rank | code | two lists, ordered tie-breaks |
@@ -166,11 +166,31 @@ Measured on a 50-episode pack (169,247 tokens of raw script):
 | Raw script (what a naive approach sends) | 169,247 |
 | Beat list the tagger sees (no timestamps) | 87,484 |
 | Trimmed camera prose | 76,547 |
-| Tag + batched judge, whole pack | ~187,000 |
-| Tag + judge if judging per candidate instead of batched | ~369,000 |
+| Judge pass input, 47 episodes with candidates, 4 per episode | ~150,000 |
 
-Batching the judge pass per episode rather than per candidate is the
-difference between roughly token-neutral and 2–4× worse.
+The judge makes **one call per episode**, scoring all of that episode's
+candidates together, which saves the per-call overhead and one copy of the
+prompt template per candidate.
+
+It does **not** save the beat text, and an earlier version of this section
+claimed it did, quoting a saving of ~187,000 tokens against ~369,000. That
+comparison assumed the episode's beats were sent once with candidates
+referenced as id ranges. They are not: `render_candidate()` renders each
+candidate's own span, so candidates whose windows overlap send the same beat
+text more than once. The figure above is what the judge pass actually costs,
+measured by rebuilding every episode's prompt: 3,190 input tokens on average,
+5,230 on the largest episode.
+
+That duplication is the binding constraint on a free tier, not the total
+cost. A single request whose input plus `max_tokens` exceeds the provider's
+per-request ceiling is refused outright rather than rate-limited, so pacing
+cannot rescue it: at 8 candidates per episode one prompt reached 8,651
+tokens against a ceiling of 8,000. `shortlist_per_episode` is set to keep
+the worst episode inside it.
+
+**Known future work:** send the episode's beat text once and reference each
+candidate as a range of beat ids inside it. That removes the duplication, and
+would make the original claim true.
 
 ## Known limits
 

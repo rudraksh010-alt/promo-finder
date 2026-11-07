@@ -1,10 +1,21 @@
 """Stage 5 - Judge.
 
-One batched call per episode. The episode's beat text is sent ONCE and the
-candidates are referenced as id ranges inside it. Per-candidate calls would
-cost 2-4x more tokens for the same information: measured on the reference
-pack, per-candidate judging at 10 candidates/episode comes to ~369k tokens
-against ~187k batched.
+One call per episode, scoring all of that episode's candidates together. That
+saves the per-call overhead and one copy of the prompt template per candidate.
+
+It does NOT save the beat text, and an earlier version of this docstring
+claimed it did. render_candidate() below renders each candidate's own span,
+so candidates whose windows overlap send the same beat text more than once.
+On this pack that duplication is the binding cost: with 8 candidates one
+episode's judge prompt reached 8,651 tokens, past the provider's 8,000
+per-request ceiling, and the request was refused outright rather than
+rate-limited. The cap in config.yaml is set to keep the worst episode inside
+that ceiling.
+
+KNOWN FUTURE WORK: send the episode's beat text once and reference each
+candidate as a range of beat ids inside it. That removes the duplication
+entirely and is what the pipeline should do. It needs a matching change to
+prompts/judge.txt, so it is deliberately not done here.
 
 The judge model is configured separately from the tag model so the two can
 differ. A judge that did not make the pick cannot prefer its own work.

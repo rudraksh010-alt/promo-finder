@@ -115,10 +115,21 @@ preferences:
   # starts within 2s); it had not been carried across to the dedupe.
   dedupe_overlap: 0.85
 
-# Set from the observed numbers, as R4 said to: the cap has never bound in
-# any run (~4 gate-passers and <=3 distinct windows per episode), so 20 was
-# describing a pool that does not exist. Changes no output.
-shortlist_per_episode: 8
+# Set from the observed numbers, as R4 said to. 20 described a pool that does
+# not exist; 8 was then forced down to 4 by a hard provider limit, not by
+# taste. The judge prompt grows with the number of candidates, and a single
+# request whose input + max_tokens exceeds the per-minute ceiling (8,000) is
+# REFUSED outright, so pacing cannot rescue it. Measured across 47 episodes
+# with candidates, at max_tokens 2048:
+#     cap 8 -> 8 episodes refused (largest input 8,651, over the ceiling
+#              on its own, so no max_tokens value fits)
+#     cap 6 -> 3 refused        cap 5 -> 1 refused
+#     cap 4 -> 0 refused, worst case episode 9 at 5,230 + 2048 = 7,278,
+#              leaving 722 tokens of margin on the LARGEST episode and
+#              2,763 on the average one
+# 4 per episode still yields ~190 judged candidates across the pack, against
+# a List A that holds 10-30.
+shortlist_per_episode: 4
 
 # Ranking. List A answers "which would you post first".
 ranking:
