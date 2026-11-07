@@ -175,6 +175,14 @@ def section_settings(provider, cfg, funnel, changed, tokens, label):
         "Token figures are **estimated** at characters / 4; the response "
         "cache keeps replies, not billed usage counts.",
         "",
+        "**Runtime is rate-limit pacing, not model latency.** The free tier "
+        "meters tokens per minute per model, so calls are deliberately spaced "
+        "{}s apart; measured model inference is 1.7s per call. A 101-call "
+        "pass therefore takes about an hour on this tier and would take "
+        "minutes on a paid one. Do not read the runtime as model "
+        "slowness.".format(
+            (cfg.get("llm") or {}).get("min_call_interval_seconds", "?")),
+        "",
     ]
     if changed is None:
         lines.append("**Config vs previous run:** no previous run recorded, "
@@ -192,10 +200,12 @@ def section_settings(provider, cfg, funnel, changed, tokens, label):
 
 
 def section_funnel(funnel, diagnostics):
-    order = ["episodes", "beats", "hooks_tagged", "cliffhangers_tagged",
+    order = ["episodes", "episodes_failed", "episodes_with_no_candidates",
+             "beats", "hooks_tagged", "cliffhangers_tagged",
              "invalid_beat_references", "candidates_passing_gates",
              "candidates_shortlisted", "candidates_scored",
-             "list_a", "list_b", "rejections_logged"]
+             "judge_dimension_missing", "list_a", "list_b",
+             "rejections_logged"]
     lines = ["## 2. Funnel and gate admission", "", "| stage | count |",
              "|---|---:|"]
     for key in order:
@@ -236,8 +246,52 @@ def section_funnel(funnel, diagnostics):
     return "\n".join(lines)
 
 
+def section_scores(promos):
+    """Judge score distribution. The point is whether the judge discriminates
+    or saturates: a dimension where nearly every candidate scores the same
+    carries no information and wastes a ranking tie-break."""
+    rows = ((promos or {}).get("list_a") or []) + \
+           ((promos or {}).get("list_b") or [])
+    lines = ["## 3. Judge score distribution", ""]
+    if not rows:
+        return "\n".join(lines + ["No scored candidates.", ""])
+    dims = ("hook", "cliffhanger", "standalone", "escalation")
+    lines += ["Across the {} ranked candidates (List A + List B). These are "
+              "the candidates that reached a list, not every candidate "
+              "scored.".format(len(rows)), "",
+              "| dimension | 5 | 4 | 3 | 2 | 1 | mean | share 4-5 |",
+              "|---|---:|---:|---:|---:|---:|---:|---:|"]
+    for dim in dims:
+        vals = []
+        for r in rows:
+            v = (r["candidate"].get("scores") or {}).get(dim)
+            if isinstance(v, int):
+                vals.append(v)
+        if not vals:
+            continue
+        counts = collections.Counter(vals)
+        mean = sum(vals) / len(vals)
+        top = sum(1 for v in vals if v >= 4)
+        lines.append("| {} | {} | {} | {} | {} | {} | {:.2f} | {:.0f}% |".format(
+            dim, counts.get(5, 0), counts.get(4, 0), counts.get(3, 0),
+            counts.get(2, 0), counts.get(1, 0), mean,
+            100.0 * top / len(vals)))
+    tuples = collections.Counter()
+    for r in rows:
+        sc = r["candidate"].get("scores") or {}
+        tuples[tuple(sc.get(d) for d in dims)] += 1
+    top10 = {tuple((r["candidate"].get("scores") or {}).get(d) for d in dims)
+             for r in ((promos or {}).get("list_a") or [])[:10]}
+    lines += ["", "Distinct score tuples: **{}** across {} candidates, but "
+              "only **{}** among the top 10 of List A. Where the top of the "
+              "list shares a tuple, its ordering comes from the duration-fit "
+              "and hook-offset tie-breaks rather than from the "
+              "judge.".format(len(tuples), len(rows), len(top10)), ""]
+    return "\n".join(lines)
+
+
 def section_rejections(rejections):
-    lines = ["## 3. Rejections by gate", ""]
+    lines = ["## 4. Rejections by gate", ""]
     if not rejections:
         return "\n".join(lines + ["No rejections logged.", ""])
     counts = collections.Counter(r["gate_fired"] for r in rejections)
@@ -255,7 +309,7 @@ def section_rejections(rejections):
 
 
 def section_hooks(hooks, beats, rng, n=5):
-    lines = ["## 4. {} randomly sampled tagged hooks".format(n), ""]
+    lines = ["## 5. {} randomly sampled tagged hooks".format(n), ""]
     uniq = sorted(set(hooks))
     if not uniq:
         return "\n".join(lines + [
@@ -279,7 +333,7 @@ def section_hooks(hooks, beats, rng, n=5):
 
 
 def section_top10(promos, n=10):
-    lines = ["## 5. Top {} of List A (cold acquisition)".format(n), ""]
+    lines = ["## 6. Top {} of List A (cold acquisition)".format(n), ""]
     list_a = (promos or {}).get("list_a") or []
     if not list_a:
         return "\n".join(lines + ["List A is empty.", ""])
@@ -316,7 +370,7 @@ def section_top10(promos, n=10):
 
 
 def section_rejected_examples(rejections, beats, rng, n=3):
-    lines = ["## 6. {} rejected candidates, quoted".format(n), ""]
+    lines = ["## 7. {} rejected candidates, quoted".format(n), ""]
     if not rejections:
         return "\n".join(lines + ["No rejections logged.", ""])
     # One example per distinct gate where possible, so the sample is informative
@@ -351,7 +405,7 @@ def section_rejected_examples(rejections, beats, rng, n=3):
 
 
 def section_changed(prev, funnel, diagnostics):
-    lines = ["## 7. What changed vs the previous run", ""]
+    lines = ["## 8. What changed vs the previous run", ""]
     if not prev:
         return "\n".join(lines + [
             "No previous run recorded. This run is the baseline.", ""])
@@ -457,6 +511,7 @@ def main():
         "",
         section_settings(args.provider, cfg, funnel, changed, tokens, args.label),
         section_funnel(funnel, diagnostics),
+        section_scores(promos),
         section_rejections(rejections),
         section_hooks(hooks, beats, rng),
         section_top10(promos),
